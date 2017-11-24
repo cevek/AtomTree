@@ -31,7 +31,7 @@ export class AtomProxy {
     /* prototype fields */
     _fields: string[];
     _excludedMethods: string[];
-    _factoryClasses: (typeof AtomProxy | undefined)[];
+    _factoryClasses: (typeof AtomProxy | typeof AtomProxy[] | undefined)[];
 
 
     constructor(rootStore?: RootStore) {
@@ -40,6 +40,16 @@ export class AtomProxy {
             rootStore.instanceMap.set(this._id, this);
         }
     }
+
+
+    _setTarget(target: Target) {
+        if (!(target instanceof Object)) {
+            target = {};
+        }
+        this._target = target;
+        //this._values = new Array(this._fields.length);
+    }
+
 
     _id = id++;
     _parent: AtomProxy | undefined = void 0;
@@ -61,7 +71,7 @@ export class AtomProxy {
     // _keyIdx: number;
     _key: string | number = '';
     _attached = true;
-    _values: (AtomProxy | AtomValue)[] = new Array(this._fields.length);
+    _values: (AtomProxy | AtomValue | undefined)[] = new Array(this._fields.length);
 
 
     cloneTarget(): Target {
@@ -78,12 +88,12 @@ function buildAtomProxy(rootStore: RootStore | undefined, parent: AtomProxy, key
         return new AtomValue(value);
         // throw new Error('Do not specified the entity factory');
     }
-    const proxy = value instanceof Array ? new ArrayProxy(rootStore) : new CustomFactory(rootStore);
+    const proxy = CustomFactory instanceof Array ? new ArrayProxy(rootStore) : new CustomFactory(rootStore);
     proxy._parent = parent;
     proxy._key = key;
-    proxy._target = value;
-    if (proxy instanceof ArrayProxy) {
-        proxy._factoryClasses.push(CustomFactory);
+    proxy._setTarget(value);
+    if (CustomFactory instanceof Array) {
+        proxy._factoryClasses.push(CustomFactory[0]);
     }
     if (rootStore !== void 0) {
         rootStore.instanceMap.set(proxy._id, proxy);
@@ -108,6 +118,15 @@ export class RootStore extends AtomProxy {
     setReduxStore(store: Store<{}>) {
         this.reduxStore = store as CustomStore;
         this.reduxStore.atomStore = this;
+        store.subscribe(() => {
+            if (this._target !== store.getState()) {
+                for (let i = 0; i < this._values.length; i++) {
+                    detach(this._values[i]);
+                    this._values[i] = void 0;
+                }
+                this._target = store.getState();
+            }
+        });
     }
 
     mainReducer = (state: {}, action: Action) => {
@@ -169,7 +188,7 @@ export class RootStore extends AtomProxy {
         for (let i = 0; i < proto._factoryClasses.length; i++) {
             const SubCtor = proto._factoryClasses[i];
             if (SubCtor) {
-                this.registerReducersFromClass(SubCtor);
+                this.registerReducersFromClass(SubCtor instanceof Array ? SubCtor[0] : SubCtor);
             }
         }
     }
@@ -177,33 +196,49 @@ export class RootStore extends AtomProxy {
 
 
 class ArrayProxy extends AtomProxy {
-    _factoryClasses: (typeof AtomProxy | undefined)[] = [];
+    _factoryClasses: (typeof AtomProxy | typeof AtomProxy[] | undefined)[] = [];
 
     _target: ArrayTarget;
     _version = new AtomValue(arrayVersion++);
+    // _values = [];
 
     length: number;
 
+
     _commit() {
-        detach(this._version);
-        this._version = new AtomValue(arrayVersion++);
         const newTarget = new Array(this._values.length) as ArrayTarget;
         for (let i = 0; i < this._values.length; i++) {
-            newTarget[i] = this._values[i]._target;
+            newTarget[i] = this._values[i]!._target;
         }
         Object.freeze(newTarget);
         if (this._parent !== void 0) {
             rebuildTarget(this._parent, this._key, newTarget);
         }
-        this.length = newTarget.length;
+        this._updateVersion();
     }
 
-    _makeArrayTargetsToProxy(arr: Target[]) {
-        let newArr: (AtomProxy | AtomValue)[] = arr as any;
+    _updateVersion() {
+        detach(this._version);
+        this._version = new AtomValue(arrayVersion++);
+        this.length = this._values.length;
+    }
+
+    _makeArrayTargetsToProxy(arr: (Target | undefined)[]) {
+        let newArr: (AtomProxy | AtomValue)[] = new Array(arr.length);
         for (let i = 0; i < arr.length; i++) {
-            newArr[i] = buildAtomProxy(this._rootStore!, this, 0, i, arr[i]);
+            newArr[i] = buildAtomProxy(this._rootStore!, this, 0, i, arr[i]!);
         }
         return newArr;
+    }
+
+
+    _setTarget(target: Target) {
+        if (!(target instanceof Array)) {
+            target = [] as any;
+        }
+        this._target = target as ArrayTarget;
+        this._values = this._makeArrayTargetsToProxy(target as ArrayTarget);
+        this._updateVersion();
     }
 
     push(...items: Target[]) {
@@ -321,6 +356,9 @@ function rebuildTarget(proxy: AtomProxy, key: string | number, value: Target) {
 function detach(proxy: AtomProxy | AtomValue | undefined) {
     if (proxy instanceof AtomProxy) {
         proxy._attached = false;
+        // if (proxy._parent !== void 0) {
+        // proxy._parent._values[proxy._keyIdx] = undefined!;
+        // }
         proxy._parent = void 0;
         if (proxy._rootStore !== void 0) {
             proxy._rootStore.instanceMap.delete(proxy._id);
@@ -328,6 +366,7 @@ function detach(proxy: AtomProxy | AtomValue | undefined) {
         proxy._rootStore = void 0;
         for (let i = 0; i < proxy._values.length; i++) {
             detach(proxy._values[i]);
+            proxy._values[i] = undefined;
         }
     }
     if (proxy instanceof AtomValue) {
@@ -413,7 +452,7 @@ function actionCreatorFactory(type: string, reducer: () => void) {
     return actionCreator;
 }
 
-export function prepareEntity<T>(Ctor: typeof AtomProxy & { new (): T }, fields: (keyof T)[], excludedMethods: (keyof T)[], factories: { [key: string]: typeof AtomProxy }) {
+export function prepareEntity<T>(Ctor: typeof AtomProxy & { new (): T }, fields: (keyof T)[], excludedMethods: (keyof T)[], factories: { [key: string]: (typeof AtomProxy | typeof AtomProxy[]) }) {
     const methods = Object.getOwnPropertyNames(Ctor.prototype);
     for (let i = 0; i < methods.length; i++) {
         const methodName = methods[i];
@@ -480,12 +519,13 @@ export function component<Store extends BaseStore>(StoreCtor: { new(): Store }) 
             }
 
             unsubscribe: () => void = undefined!;
+            isMount = true;
 
             componentWillMount() {
                 this.unsubscribe = this.context.store.subscribe(() => {
                     setTimeout(() => {
-                        if (this.shouldComponentUpdate(this.props, this.state, this.context)) {
-                            this.forceUpdate();
+                        if (this.isMount) {
+                            this.setState({ x: Math.random() });
                         }
                     });
                 });
@@ -495,13 +535,16 @@ export function component<Store extends BaseStore>(StoreCtor: { new(): Store }) 
                 this.unsubscribe();
             }
 
+            componentWillUmount() {
+                this.isMount = false;
+            }
 
             render() {
                 const { store } = this.context;
                 usingProxies = [];
                 try {
                     const storeKeyIdx = store.atomStore._factoryMap.get(StoreCtor.name)!;
-                    const ret = fn(this.props, store.atomStore._values[storeKeyIdx] as Store);
+                    const ret = fn(this.props, getValue(store.atomStore, storeKeyIdx, StoreCtor.name) as Store);
                     this.listenedProps = usingProxies;
                     return ret;
                 } finally {
