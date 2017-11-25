@@ -41,11 +41,10 @@ export class AtomProxy {
     constructor(rootStore?: RootStore, target?: Target, parent?: AtomProxy, key?: string | number) {
         this._rootStore = rootStore;
         this._parent = parent;
-        this._key = key!;
         this._target = target === void 0 ? {} : target;
         this._values = Array(this._fields.length);
         if (rootStore !== void 0) {
-            rootStore._makePathAndAddToStorage(this);
+            rootStore._makePathAndAddToStorage(this, key!);
         }
     }
 
@@ -157,12 +156,13 @@ export class RootStore extends AtomProxy {
         }
     }
 
-    _makePathAndAddToStorage(proxy: AtomProxy | AtomValue | undefined) {
+    _makePathAndAddToStorage(proxy: AtomProxy | AtomValue | undefined, key: string | number) {
         if (proxy instanceof AtomProxy && proxy._parent !== void 0) {
+            proxy._key = key;
             proxy._path = proxy._parent._path + '.' + proxy._key;
             this.instanceMap.set(proxy._path, proxy);
             for (let i = 0; i < proxy._values.length; i++) {
-                this._makePathAndAddToStorage(proxy._values[i]);
+                this._makePathAndAddToStorage(proxy._values[i], proxy._fields[i]);
             }
         }
     }
@@ -326,7 +326,7 @@ class ArrayProxy extends AtomProxy {
         this._target = newTarget;
         if (this._rootStore !== void 0) {
             for (let i = start; i < end; i++) {
-                this._rootStore._makePathAndAddToStorage(this._values[i]);
+                this._rootStore._makePathAndAddToStorage(this._values[i], i);
             }
         }
         this._updateVersion();
@@ -396,7 +396,7 @@ class ArrayProxy extends AtomProxy {
             detach(this._values[i]);
         }
         const ret = this._values.splice(start, deleteCount, ...this._makeArrayTargetsToProxy(items, start));
-        this._commit(start + deleteCount, this._values.length);
+        this._commit(start, this._values.length);
         return ret;
     }
 
