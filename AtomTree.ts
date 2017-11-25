@@ -32,6 +32,7 @@ interface ActionCreator {
 
 export class AtomProxy {
     /* prototype fields */
+    _path: string = '';
     _fields: string[];
     _excludedMethods: string[];
     _factoryClasses: (typeof AtomProxy | typeof AtomProxy[] | undefined)[];
@@ -44,7 +45,7 @@ export class AtomProxy {
         this._target = target === void 0 ? {} : target;
         this._values = Array(this._fields.length);
         if (rootStore !== void 0) {
-            rootStore.instanceMap.set(this._id, this);
+            rootStore._makePathAndAddToStorage(this);
         }
     }
 
@@ -111,19 +112,20 @@ function buildAtomProxy(rootStore: RootStore | undefined, parent: AtomProxy, key
 
 interface Action {
     type: string;
-    id?: number;
+    path?: string;
     payload?: {};
 }
 
 export class RootStore extends AtomProxy {
     reducers = new Map<string, (payload: {}) => void>();
     reduxStore: CustomStore;
-    instanceMap = new Map<number, AtomProxy>();
+    instanceMap = new Map<string, AtomProxy>();
     _factoryClasses: typeof AtomProxy[] = [];
     _factoryMap = new Map<string, number>();
     stores: typeof BaseStore[];
     _fields: string[] = [];
     _values: (AtomProxy | AtomValue | undefined)[] = [];
+    _path = 'root';
 
     setReduxStore(store: Store<{}>) {
         this.reduxStore = store as CustomStore;
@@ -155,10 +157,21 @@ export class RootStore extends AtomProxy {
         }
     }
 
+    _makePathAndAddToStorage(proxy: AtomProxy | AtomValue | undefined) {
+        if (proxy instanceof AtomProxy && proxy._parent !== void 0) {
+            proxy._path = proxy._parent._path + '.' + proxy._key;
+            this.instanceMap.set(proxy._path, proxy);
+            for (let i = 0; i < proxy._values.length; i++) {
+                this._makePathAndAddToStorage(proxy._values[i]);
+            }
+        }
+    }
+
+
     mainReducer = (state: {}, action: Action): {} => {
         const reducer = this.reducers.get(action.type);
         if (reducer !== void 0) {
-            const instance = this.instanceMap.get(action.id!);
+            const instance = this.instanceMap.get(action.path!);
             if (instance !== void 0) {
                 const prevInTransaction = inTransaction;
                 inTransaction = true;
@@ -184,7 +197,8 @@ export class RootStore extends AtomProxy {
     };
 
     dispatch(type: string, thisArg: AtomProxy, payload: {}) {
-        this.reduxStore.dispatch({ type: type, id: thisArg._id, payload });
+        const action: Action = { type: type, path: thisArg._path, payload };
+        this.reduxStore.dispatch(action);
     }
 
 
@@ -251,12 +265,12 @@ class ArrayProxy extends AtomProxy {
             this._target = [];
         } else {
             this._target = target;
-            this._values = this._makeArrayTargetsToProxy(this._target);
+            this._values = this._makeArrayTargetsToProxy(this._target, 0);
         }
         this._updateVersion();
     }
 
-    _commit() {
+    _commit(start: number, end: number) {
         const newTarget = new Array(this._values.length) as ArrayTarget;
         for (let i = 0; i < this._values.length; i++) {
             newTarget[i] = this._values[i]!._target;
@@ -266,6 +280,11 @@ class ArrayProxy extends AtomProxy {
             rebuildTarget(this._parent, this._key, newTarget);
         }
         this._target = newTarget;
+        if (this._rootStore !== void 0) {
+            for (let i = start; i < end; i++) {
+                this._rootStore._makePathAndAddToStorage(this._values[i]);
+            }
+        }
         this._updateVersion();
     }
 
@@ -275,10 +294,10 @@ class ArrayProxy extends AtomProxy {
         this.length = this._values.length;
     }
 
-    _makeArrayTargetsToProxy(arr: (Target | undefined)[]) {
+    _makeArrayTargetsToProxy(arr: (Target | undefined)[], idxStart: number) {
         let newArr: (AtomProxy | AtomValue)[] = new Array(arr.length);
         for (let i = 0; i < arr.length; i++) {
-            newArr[i] = buildAtomProxy(this._rootStore, this, 0, i, arr[i]!);
+            newArr[i] = buildAtomProxy(this._rootStore, this, 0, idxStart + i, arr[i]!);
         }
         return newArr;
     }
@@ -291,16 +310,16 @@ class ArrayProxy extends AtomProxy {
 
     push(...items: Target[]) {
         if (this._checkToExit()) return this._target.length;
-        const ret = this._values.push(...this._makeArrayTargetsToProxy(items));
-        this._commit();
+        const ret = this._values.push(...this._makeArrayTargetsToProxy(items, this._values.length));
+        this._commit(0, 0);
         return ret;
     }
 
 
     unshift(...items: Target[]) {
         if (this._checkToExit()) return this._target.length;
-        const ret = this._values.unshift(...this._makeArrayTargetsToProxy(items));
-        this._commit();
+        const ret = this._values.unshift(...this._makeArrayTargetsToProxy(items, 0));
+        this._commit(items.length, this._values.length);
         return ret;
     }
 
@@ -308,7 +327,7 @@ class ArrayProxy extends AtomProxy {
         if (this._checkToExit()) return void 0;
         const ret = this._values.pop();
         detach(ret);
-        this._commit();
+        this._commit(0, 0);
         return getProxyOrRawValue(ret);
     }
 
@@ -316,31 +335,31 @@ class ArrayProxy extends AtomProxy {
         if (this._checkToExit()) return void 0;
         const ret = this._values.shift();
         detach(ret);
-        this._commit();
+        this._commit(0, this._values.length);
         return getProxyOrRawValue(ret);
     }
 
     reverse() {
         if (this._checkToExit()) return this;
         this._values.reverse();
-        this._commit();
+        this._commit(0, this._values.length);
         return this;
     }
 
-    splice(start: number, deleteCount: number, ...items: Target[]) {
+    splice(start: number, deleteCount = 0, ...items: Target[]) {
         if (this._checkToExit()) return this;
-        for (let i = start; i < deleteCount; i++) {
+        for (let i = start; i < start + deleteCount; i++) {
             detach(this._values[i]);
         }
-        const ret = this._values.splice(start, deleteCount, ...this._makeArrayTargetsToProxy(items));
-        this._commit();
+        const ret = this._values.splice(start, deleteCount, ...this._makeArrayTargetsToProxy(items, start));
+        this._commit(start + deleteCount, this._values.length);
         return ret;
     }
 
     sort(compareFn: (a: Target | undefined, b: Target | undefined) => number = () => 1) {
         if (this._checkToExit()) return this;
         this._values.sort((a, b) => compareFn(getProxyOrRawValue(a), getProxyOrRawValue(b)));
-        this._commit();
+        this._commit(0, this._values.length);
         return this;
     }
 
@@ -396,7 +415,7 @@ function detach(proxy: AtomProxy | AtomValue | undefined) {
         // }
         proxy._parent = void 0;
         if (proxy._rootStore !== void 0) {
-            proxy._rootStore.instanceMap.delete(proxy._id);
+            proxy._rootStore.instanceMap.delete(proxy._path);
         }
         proxy._rootStore = void 0;
         if (proxy._values !== void 0) {
