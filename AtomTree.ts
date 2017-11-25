@@ -185,8 +185,8 @@ export class RootStore extends AtomProxy {
                 throw new Error('You try to use a detached object from the state tree');
             }
         } else if (action.type === '@@INIT') {
-            this._target = state !== void 0 ? state : {};
             initWithState = state !== void 0;
+            this.replaceState(state);
             try {
                 this._initialize(this);
             } finally {
@@ -195,6 +195,14 @@ export class RootStore extends AtomProxy {
         }
         return this._target;
     };
+
+    replaceState(target: Target) {
+        this._target = target === void 0 ? {} : target;
+        for (let i = 0; i < this._values.length; i++) {
+            detach(this._values[i]);
+            this._values[i] = void 0;
+        }
+    }
 
     dispatch(type: string, thisArg: AtomProxy, payload: {}) {
         payload = this._convertPayloadToPlainObject(payload);
