@@ -176,7 +176,7 @@ export class RootStore extends AtomProxy {
                 const prevInTransaction = inTransaction;
                 inTransaction = true;
                 try {
-                    reducer.call(instance, action.payload);
+                    reducer.call(instance, this._convertPayloadPlainObjectToNormal(action.payload));
                     return this._target;
                 } finally {
                     inTransaction = prevInTransaction;
@@ -197,10 +197,46 @@ export class RootStore extends AtomProxy {
     };
 
     dispatch(type: string, thisArg: AtomProxy, payload: {}) {
+        payload = this._convertPayloadToPlainObject(payload);
         const action: Action = { type: type, path: thisArg._path, payload };
         this.reduxStore.dispatch(action);
     }
 
+    _convertPayloadToPlainObject(payload: Index) {
+        if (typeof payload === 'object' && payload !== null) {
+            if (payload instanceof AtomProxy) {
+                return { _path: payload._path };
+            }
+            const keys = Object.keys(payload);
+            for (let i = 0; i < keys.length; i++) {
+                const key = keys[i];
+                const val = payload[key];
+                const newVal = this._convertPayloadToPlainObject(val);
+                if (val !== newVal) {
+                    payload[key] = newVal;
+                }
+            }
+        }
+        return payload;
+    }
+
+    _convertPayloadPlainObjectToNormal(payload: Index | undefined) {
+        if (typeof payload === 'object' && payload !== null) {
+            if (payload._path) {
+                return this.instanceMap.get(payload._path);
+            }
+            const keys = Object.keys(payload);
+            for (let i = 0; i < keys.length; i++) {
+                const key = keys[i];
+                const val = payload[key];
+                const newVal = this._convertPayloadPlainObjectToNormal(val);
+                if (val !== newVal) {
+                    payload[key] = newVal;
+                }
+            }
+        }
+        return payload;
+    }
 
     constructor(stores: typeof BaseStore[]) {
         super(void 0, {});
